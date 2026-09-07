@@ -314,7 +314,7 @@ final class IME: NSObject, NSApplicationDelegate {
     func positionPanel(height: CGFloat) {
         let mouse = NSEvent.mouseLocation
         panel.setFrameTopLeftPoint(NSPoint(x: mouse.x, y: mouse.y - 6))
-        panel.setFrameSize(NSSize(width: 340, height: height))
+        panel.setContentSize(NSSize(width: 340, height: height))
     }
 
     func showToast(_ text: String) {
