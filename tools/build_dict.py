@@ -5,6 +5,7 @@
   th/hu/...  = packs/{lang}.json 词汇包语言（需先 build_pack.py 生成）
 """
 import json, os, re, sys, unicodedata
+sys.stdout.reconfigure(encoding="utf-8")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 lang = sys.argv[1] if len(sys.argv) > 1 else "en"

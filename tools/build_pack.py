@@ -7,6 +7,7 @@
 配额说明: MyMemory 有每日限额；没跑完明天重跑同一命令即自动续传（缓存 packs/_cache/）。
 """
 import json, os, re, sys, time, unicodedata, urllib.request, urllib.parse
+sys.stdout.reconfigure(encoding="utf-8")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
