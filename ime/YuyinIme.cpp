@@ -29,8 +29,9 @@ static std::wstring g_toast;   // 开关提示（闪现）
 static void LayoutCand();   // forward
 static void Reset();
 static void ShowToast(const wchar_t* text);
+static LRESULT CALLBACK HookProc(int code, WPARAM w, LPARAM l);
 
-struct Entry { std::wstring word, comment; };          // word=外语  comment=中文
+struct Entry { std::wstring word, comment; long long freq = 0; bool exact = false; };   // word=外语 comment=中文 freq=语料词频 exact=整音节匹配
 static std::unordered_map<std::wstring, std::vector<Entry>> g_dict;
 static std::unordered_map<std::wstring, std::wstring> g_hansWord;   // 中文 → 首选外语
 static std::vector<std::wstring> g_keys;                            // 排序键表（二分前缀查询）
@@ -127,7 +128,9 @@ static void LoadDict() {
     if (!std::getline(ss, key, '\t')) continue;
     if (!std::getline(ss, word, '\t')) continue;
     std::getline(ss, comment, '\t');
-    Entry e = { Utf8ToWide(word), Utf8ToWide(comment) };
+    long long f = 0;
+    ss >> f;
+    Entry e = { Utf8ToWide(word), Utf8ToWide(comment), f };
     g_dict[Utf8ToWide(key)].push_back(e);
     if (!e.comment.empty() && !g_hansWord.count(e.comment)) g_hansWord[e.comment] = e.word;
   }
@@ -142,7 +145,8 @@ static void QueryCandidates() {
   if (g_st.comp.empty()) { g_st.pageCount = 1; g_st.page = 0; return; }
   std::vector<Entry> raw;
   auto it = g_dict.find(g_st.comp);
-  if (it != g_dict.end()) raw = it->second;
+  if (it != g_dict.end())
+    for (auto e : it->second) { e.exact = true; raw.push_back(e); }   // 整音节精确匹配优先
   // 排序键表二分：只遍历命中前缀的键段（不再全表扫描）
   auto lo = std::lower_bound(g_keys.begin(), g_keys.end(), g_st.comp);
   for (auto kit = lo; kit != g_keys.end(); ++kit) {
@@ -158,8 +162,11 @@ static void QueryCandidates() {
     g_st.cands.push_back(e);
     if (g_st.cands.size() > 80) break;
   }
+  auto score = [](const Entry& e) {
+    return (long long)FreqOf(e.comment) * 10000000LL + (e.exact ? 50000000LL : 0) + e.freq;
+  };   // 用户习惯 > 整音节匹配 > 语料词频
   std::stable_sort(g_st.cands.begin(), g_st.cands.end(),
-                   [](const Entry& a, const Entry& b) { return FreqOf(a.comment) > FreqOf(b.comment); });
+                   [&](const Entry& a, const Entry& b) { return score(a) > score(b); });
   g_st.pageCount = (int)((g_st.cands.size() + 7) / 8);
   if (g_st.pageCount < 1) g_st.pageCount = 1;
   if (g_st.page >= g_st.pageCount) g_st.page = g_st.pageCount - 1;
@@ -461,7 +468,7 @@ static LRESULT CALLBACK CandProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
     SelectObject(dc, g_hFontSmall); SetTextColor(dc, mut);
     wchar_t foot[64];
-    swprintf(foot, 64, L"%d / %d   空格上中文 · 数字上外语", g_st.page + 1, g_st.pageCount);
+    swprintf(foot, 64, L"%d / %d   空格/数字上中文 · Shift+数字上外语", g_st.page + 1, g_st.pageCount);
     TextOutW(dc, 8, rc.bottom - 18, foot, (int)wcslen(foot));
     EndPaint(h, &ps);
     return 0;
@@ -472,8 +479,10 @@ static LRESULT CALLBACK CandProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       KillTimer(h, 1);
       g_toast.clear();
       if (g_st.comp.empty()) ShowWindow(h, SW_HIDE);
-    } else if (w == 2) {          // 学习数据落盘（避开钩子线程）
+    } else if (w == 2) {          // 学习数据落盘 + 钩子看门狗
       if (g_userDirty) SaveUser();
+      if (g_hHook) UnhookWindowsHookEx(g_hHook);
+      g_hHook = SetWindowsHookExW(WH_KEYBOARD_LL, HookProc, g_hInst, 0);   // 定期重装：Windows 可能静默移除低级钩子
     }
     return 0;
   }
@@ -536,10 +545,12 @@ static bool HandleKey(DWORD vk, bool* eaten) {
       else CommitRaw();
       *eaten = true; return true;
     }
-    if (vk >= '1' && vk <= '8') {              // 数字：上屏外语词（学习动作）
+    if (vk >= '1' && vk <= '8') {              // 数字：上屏中文；Shift+数字：上屏外语（学习动作）
+      bool shift = GetAsyncKeyState(VK_SHIFT) & 0x8000;
       int idx = g_st.page * 8 + (vk - '1');
-      if (idx < (int)g_st.cands.size()) CommitForeign(idx);
-      else CommitRaw();
+      if (idx < (int)g_st.cands.size()) {
+        if (shift) CommitForeign(idx); else CommitHan(idx);
+      } else CommitRaw();
       *eaten = true; return true;
     }
     if (vk == VK_UP || vk == VK_DOWN) {
@@ -564,8 +575,10 @@ static bool HandleKey(DWORD vk, bool* eaten) {
   if (g_st.assoc && !g_st.cands.empty()) {
     if (vk >= '1' && vk <= '8') {
       int idx = g_st.page * 8 + (vk - '1');
-      if (idx < (int)g_st.cands.size()) CommitForeign(idx);   // 联想中外语也上外语
-      else { g_st.assoc = false; g_st.cands.clear(); ShowWindow(g_hCand, SW_HIDE); }
+      if (idx < (int)g_st.cands.size()) {
+        bool shift = GetAsyncKeyState(VK_SHIFT) & 0x8000;
+        if (shift) CommitForeign(idx); else CommitHan(idx);
+      } else { g_st.assoc = false; g_st.cands.clear(); ShowWindow(g_hCand, SW_HIDE); }
       *eaten = true; return true;
     }
     if (vk == VK_SPACE || vk == VK_RETURN) { CommitHan(g_st.page * 8 + g_st.active); *eaten = true; return true; }

@@ -3,12 +3,32 @@
 用法: python tools/build_dict.py [语言]
   en  (默认) = CC-CEDICT 全量汉英（10 万+ 条）
   th/hu/...  = packs/{lang}.json 词汇包语言（需先 build_pack.py 生成）
+列格式: 拼音键 \t 外语词 \t 中文 \t 语料词频
+首行: lang:<语言名>（设置页显示当前语言用）
 """
 import json, os, re, sys, unicodedata
-sys.stdout.reconfigure(encoding="utf-8")
 
+sys.stdout.reconfigure(encoding="utf-8")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 lang = sys.argv[1] if len(sys.argv) > 1 else "en"
+TAB = chr(9)
+
+
+def load_freq():
+    """jieba 词频表：词 → 语料频率（常用字排序依据）"""
+    p = os.path.join(ROOT, "data", "raw", "jieba_dict.txt")
+    freq = {}
+    if not os.path.exists(p):
+        print("警告：缺少 jieba 词频表，候选将按词典原序")
+        return freq
+    for line in open(p, encoding="utf-8"):
+        parts = line.split()
+        if len(parts) >= 2:
+            try:
+                freq[parts[0]] = int(parts[1])
+            except ValueError:
+                pass
+    return freq
 
 
 def pinyin_key(py):
@@ -18,6 +38,7 @@ def pinyin_key(py):
     return re.sub(r"[^a-zv]", "", s)
 
 
+FREQ = load_freq()
 lines = []
 if lang == "en":
     src = os.path.join(ROOT, "data", "raw", "cedict.txt")
@@ -42,14 +63,15 @@ if lang == "en":
         g = re.sub(r"^to\s+", "", g).split(";")[0].strip()
         if not g or len(g) > 30:
             continue
-        lines.append(f"{key}\t{g}\t{hans}")
+        lines.append(TAB.join([key, g, hans, str(FREQ.get(hans, 0))]))
 else:
     pack = json.load(open(os.path.join(ROOT, "packs", f"{lang}.json"), encoding="utf-8"))
     for w in pack["words"]:
-        lines.append(f"{w['key']}\t{w['word']}\t{w['hans']}")
+        lines.append(TAB.join([w["key"], w["word"], w["hans"], str(FREQ.get(w["hans"], 0))]))
 
+name = "英语" if lang == "en" else json.load(
+    open(os.path.join(ROOT, "packs", f"{lang}.json"), encoding="utf-8"))["langName"]
 out = os.path.join(ROOT, "ime", "dict.tsv")
-name = "英语" if lang == "en" else json.load(open(os.path.join(ROOT, "packs", f"{lang}.json"), encoding="utf-8"))["langName"]
-with open(out, "w", encoding="utf-8") as f:
+with open(out, "w", encoding="utf-8", newline="\n") as f:
     f.write(f"lang:{name}\n" + "\n".join(lines))
 print(f"dict.tsv: {len(lines)} entries [{lang} -> {name}]")
