@@ -61,7 +61,7 @@ jobs:
           swiftc -O -framework AppKit -framework CoreGraphics -o /tmp/YuyinIme macos/daemon.swift
           mkdir -p dist/YuyinIme.app/Contents/MacOS dist/YuyinIme.app/Contents/Resources
           cp /tmp/YuyinIme dist/YuyinIme.app/Contents/MacOS/YuyinIme
-          cp dict.tsv dist/YuyinIme.app/Contents/Resources/dict.tsv
+          cp ime/dict.tsv dist/YuyinIme.app/Contents/Resources/dict.tsv
           cat > dist/YuyinIme.app/Contents/Info.plist <<'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
