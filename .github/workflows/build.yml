@@ -1,0 +1,78 @@
+name: Build YuyinIme (Windows + macOS)
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build IME exe
+        shell: pwsh
+        run: python tools/compile.py
+
+      - name: Build dictionary (CC-CEDICT full)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force data/raw | Out-Null
+          Invoke-WebRequest -Uri 'https://www.mdbg.net/chinese/export/cedict/cedict_1_0_ts_utf-8_mdbg.txt.gz' -OutFile data/raw/cedict.txt.gz
+          python -c "import gzip; open('data/raw/cedict.txt','wb').write(gzip.open('data/raw/cedict.txt.gz').read())"
+          python tools/build_dict.py en
+
+      - name: Build installer (NSIS preinstalled on runner)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          & "C:\Program Files (x86)\NSIS\makensis.exe" installer\setup.nsi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: YuyinIme-Windows
+          path: dist/YuyinIme-Setup.exe
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build dictionary
+        run: |
+          mkdir -p data/raw
+          curl -sL -o data/raw/cedict.txt.gz https://www.mdbg.net/chinese/export/cedict/cedict_1_0_ts_utf-8_mdbg.txt.gz
+          gunzip -kf data/raw/cedict.txt.gz
+          python3 tools/build_dict.py en
+
+      - name: Build app + dmg
+        run: |
+          swiftc -O -framework AppKit -framework CoreGraphics -o /tmp/YuyinIme macos/daemon.swift
+          mkdir -p dist/YuyinIme.app/Contents/MacOS dist/YuyinIme.app/Contents/Resources
+          cp /tmp/YuyinIme dist/YuyinIme.app/Contents/MacOS/YuyinIme
+          cp dict.tsv dist/YuyinIme.app/Contents/Resources/dict.tsv
+          cat > dist/YuyinIme.app/Contents/Info.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleIdentifier</key><string>org.yuyan.ime</string>
+            <key>CFBundleName</key><string>YuyinIme</string>
+            <key>CFBundleExecutable</key><string>YuyinIme</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+          </dict></plist>
+          PLIST
+          hdiutil create -volname YuyinIme -srcfolder dist/YuyinIme.app -ov -format UDZO dist/YuyinIme-macOS.dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: YuyinIme-macOS
+          path: dist/YuyinIme-macOS.dmg
