@@ -135,7 +135,12 @@ def main():
                    'level': 'HSK 1-2', 'count': len(words), 'words': words},
                   open(os.path.join(packs, f'{lang}.json'), 'w', encoding='utf-8'),
                   ensure_ascii=False)
-        print(f'[{lang}] packs/{lang}.json: {len(words)} 词'
+        # 同步生成输入法可直接使用的 tsv（lang: 头 + key/word/hans）
+        with open(os.path.join(packs, f'{lang}.tsv'), 'w', encoding='utf-8') as f:
+            f.write(f'lang:{name}\n')
+            for w in words:
+                f.write(f"{w['key']}\t{w['word']}\t{w['hans']}\n")
+        print(f'[{lang}] packs/{lang}.json + {lang}.tsv: {len(words)} 词'
               + ('（配额中断，可续传）' if quota else ''))
         if quota:
             break

@@ -28,9 +28,16 @@ static bool g_armed = false;   // 外语组字模式（按 ` 进入，Esc/上屏
 static std::wstring g_toast;   // 开关提示（闪现）
 
 static void LayoutCand();   // forward
+static void Reset();
+static void ShowToast(const wchar_t* text);
 
 struct Entry { std::wstring word, comment; };
 static std::unordered_map<std::wstring, std::vector<Entry>> g_dict;
+static std::wstring g_currentLang = L"英语";
+
+// 语言包设置页
+static HWND g_hSettings = nullptr, g_hList = nullptr, g_hCur = nullptr;
+static std::vector<std::pair<std::wstring, std::wstring>> g_packList;   // (路径, 语言名)
 
 struct State {
   std::wstring comp;
@@ -106,11 +113,13 @@ static int FreqOf(const std::wstring& w) {
 // ---------------- 词典 ----------------
 static void LoadDict() {
   std::wstring dir = ExeDir();
+  g_dict.clear();
   std::ifstream f(dir + L"\\dict.tsv");
   if (!f) return;
   std::string line;
   while (std::getline(f, line)) {
     if (line.empty() || line[0] == '#') continue;
+    if (line.rfind("lang:", 0) == 0) { g_currentLang = Utf8ToWide(line.substr(5)); continue; }
     std::istringstream ss(line);
     std::string key, word, comment;
     if (!std::getline(ss, key, '\t')) continue;
@@ -157,7 +166,115 @@ static void SetupAssoc() {
   LayoutCand();
 }
 
-// ---------------- 候选窗 ----------------
+// ---------------- 设置页：语言切换 ----------------
+static void ScanPacks() {
+  g_packList.clear();
+  std::wstring dir = ExeDir() + L"\\packs";
+  WIN32_FIND_DATAW fd;
+  HANDLE h = FindFirstFileW((dir + L"\\*.tsv").c_str(), &fd);
+  if (h == INVALID_HANDLE_VALUE) return;
+  do {
+    std::wstring file = dir + L"\\" + fd.cFileName;
+    std::ifstream f(file);
+    std::string line;
+    std::wstring name = fd.cFileName;
+    if (std::getline(f, line) && line.rfind("lang:", 0) == 0)
+      name = Utf8ToWide(line.substr(5));
+    g_packList.push_back({ file, name });
+  } while (FindNextFileW(h, &fd));
+  FindClose(h);
+  std::sort(g_packList.begin(), g_packList.end(),
+            [](auto& a, auto& b) { return a.second < b.second; });
+}
+
+static void ApplyLang(int idx) {
+  if (idx < 0 || idx >= (int)g_packList.size()) return;
+  std::ifstream in(g_packList[idx].first);
+  std::ofstream out(ExeDir() + L"\\dict.tsv");
+  out << in.rdbuf();
+  LoadDict();
+  Reset();
+  wchar_t tip[128];
+  swprintf(tip, 128, L"已切换到 %s", g_currentLang.c_str());
+  ShowToast(tip);
+}
+
+static LRESULT CALLBACK SettingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+  if (m == WM_CREATE) {
+    CreateWindowExW(0, L"STATIC", nullptr, WS_CHILD | WS_VISIBLE,
+                    14, 12, 330, 22, h, (HMENU)1, g_hInst, nullptr);
+    g_hList = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", nullptr,
+                    WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY | LBS_HASSTRINGS,
+                    14, 40, 330, 300, h, (HMENU)2, g_hInst, nullptr);
+    CreateWindowExW(0, L"BUTTON", L"应用", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+                    14, 352, 100, 32, h, (HMENU)3, g_hInst, nullptr);
+    CreateWindowExW(0, L"BUTTON", L"刷新", WS_CHILD | WS_VISIBLE,
+                    126, 352, 100, 32, h, (HMENU)4, g_hInst, nullptr);
+    CreateWindowExW(0, L"BUTTON", L"关闭", WS_CHILD | WS_VISIBLE,
+                    244, 352, 100, 32, h, (HMENU)5, g_hInst, nullptr);
+    EnumChildWindows(h, [](HWND c, LPARAM font) -> BOOL {
+      SendMessageW(c, WM_SETFONT, (WPARAM)font, TRUE); return TRUE;
+    }, (LPARAM)g_hFont);
+    return 0;
+  }
+  if (m == WM_COMMAND) {
+    int id = LOWORD(w), code = HIWORD(w);
+    if (id == 5 || (id == 2 && code == LBN_KILLFOCUS)) { DestroyWindow(h); return 0; }
+    if ((id == 3 && code == BN_CLICKED) || (id == 2 && code == LBN_DBLCLK)) {
+      int sel = (int)SendMessageW(g_hList, LB_GETCURSEL, 0, 0);
+      ApplyLang(sel);
+      SendMessageW(g_hCur, WM_SETTEXT, 0, (LPARAM)((std::wstring(L"当前语言：") + g_currentLang).c_str()));
+      // 刷新列表（当前项标记）
+      int n = (int)SendMessageW(g_hList, LB_GETCOUNT, 0, 0);
+      for (int i = 0; i < n; i++) {
+        wchar_t txt[96]; SendMessageW(g_hList, LB_GETTEXT, i, (LPARAM)txt);
+        std::wstring t = txt;
+        size_t p = t.find(L"（当前）");
+        if (p != std::wstring::npos) t = t.substr(0, p);
+        if (i == sel) t += L"（当前）";
+        SendMessageW(g_hList, LB_DELETESTRING, i, 0);
+        SendMessageW(g_hList, LB_INSERTSTRING, i, (LPARAM)t.c_str());
+      }
+      SendMessageW(g_hList, LB_SETCURSEL, sel, 0);
+      return 0;
+    }
+    if (id == 4 && code == BN_CLICKED) {
+      ScanPacks();
+      SendMessageW(g_hList, LB_RESETCONTENT, 0, 0);
+      for (auto& pk : g_packList) {
+        std::wstring label = pk.second + (pk.second == g_currentLang ? L"（当前）" : L"");
+        SendMessageW(g_hList, LB_ADDSTRING, 0, (LPARAM)label.c_str());
+      }
+      return 0;
+    }
+  }
+  if (m == WM_CLOSE) { DestroyWindow(h); return 0; }
+  if (m == WM_DESTROY) { g_hSettings = nullptr; return 0; }
+  return DefWindowProcW(h, m, w, l);
+}
+
+static void OpenSettings() {
+  if (g_hSettings) { SetForegroundWindow(g_hSettings); return; }
+  WNDCLASSW wc = {};
+  wc.lpfnWndProc = SettingsProc; wc.hInstance = g_hInst;
+  wc.lpszClassName = L"YuyinSettings"; wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+  wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+  RegisterClassW(&wc);
+  ScanPacks();
+  g_hSettings = CreateWindowExW(0, L"YuyinSettings",
+      (std::wstring(L"译语输入法 — 目标语言（已内置 ") + std::to_wstring(g_packList.size()) + L" 个语言包）").c_str(),
+      WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+      CW_USEDEFAULT, CW_USEDEFAULT, 372, 440, nullptr, nullptr, g_hInst, nullptr);
+  g_hCur = GetDlgItem(g_hSettings, 1);
+  SendMessageW(g_hCur, WM_SETTEXT, 0, (LPARAM)((std::wstring(L"当前语言：") + g_currentLang + L"　词汇包目录：packs\\").c_str()));
+  for (auto& pk : g_packList) {
+    std::wstring label = pk.second + (pk.second == g_currentLang ? L"（当前）" : L"");
+    SendMessageW(g_hList, LB_ADDSTRING, 0, (LPARAM)label.c_str());
+  }
+  ShowWindow(g_hSettings, SW_SHOW);
+}
+
+// ---------------- 主候选窗 ----------------
 static bool IsDark() {
   DWORD v = 1, cb = 4;
   RegGetValueW(HKEY_CURRENT_USER,
@@ -331,12 +448,14 @@ static LRESULT CALLBACK CandProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if (l == WM_RBUTTONUP || l == WM_LBUTTONDBLCLK) {
       HMENU menu = CreatePopupMenu();
       AppendMenuW(menu, MF_STRING, 1, g_enabled ? L"暂停输入 (Ctrl+Space)" : L"开始输入 (Ctrl+Space)");
+      AppendMenuW(menu, MF_STRING, 3, L"切换语言...");
       AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
       AppendMenuW(menu, MF_STRING, 2, L"退出 (Ctrl+Alt+Q)");
       POINT pt; GetCursorPos(&pt);
       SetForegroundWindow(h);
       int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, h, nullptr);
       DestroyMenu(menu);
+      if (cmd == 3) { OpenSettings(); return 0; }
       if (cmd == 1) {
         g_enabled = !g_enabled;
         Reset();

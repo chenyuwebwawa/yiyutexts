@@ -48,6 +48,7 @@ else:
         lines.append(f"{w['key']}\t{w['word']}\t{w['hans']}")
 
 out = os.path.join(ROOT, "ime", "dict.tsv")
+name = "英语" if lang == "en" else json.load(open(os.path.join(ROOT, "packs", f"{lang}.json"), encoding="utf-8"))["langName"]
 with open(out, "w", encoding="utf-8") as f:
-    f.write("\n".join(lines))
-print(f"dict.tsv: {len(lines)} entries [{lang}]")
+    f.write(f"lang:{name}\n" + "\n".join(lines))
+print(f"dict.tsv: {len(lines)} entries [{lang} -> {name}]")

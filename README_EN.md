@@ -83,7 +83,9 @@ python tools/build_pack.py all     # generate all 29 language packs (resumable)
 python tools/build_dict.py th      # build dict.tsv from the Thai pack
 ```
 
-Place the generated `dict.tsv` next to the IME binary and restart it to switch target language. Packs are generated with the MyMemory translation API and cached in `packs/_cache/` — if the daily quota runs out, rerun the same command the next day to resume.
+**GUI switching (recommended)**: right-click the tray icon → "切换语言..." (Switch language) — double-click any installed pack to switch instantly. Installers ship with the packs (`packs/` folder), fully offline.
+
+Command line (for custom dictionaries): place the generated `dict.tsv` next to the IME binary and restart. Packs are generated with the MyMemory translation API and cached in `packs/_cache/` — if the daily quota runs out, rerun the same command the next day to resume.
 
 Supported: Thai, Vietnamese, Burmese, Lao, Khmer, Malay, Indonesian, Hindi, Urdu, Bengali, Nepali, Sinhala, Hungarian, Finnish, Turkish, Greek, Polish, Czech, Romanian, Serbian, Bulgarian, Ukrainian, Albanian, Persian, Hebrew, Swahili, Hausa, Mongolian, Filipino.
 
