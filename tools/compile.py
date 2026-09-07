@@ -10,6 +10,19 @@ candidates = (
     + glob.glob(r"C:\Program Files\Microsoft Visual Studio\2022\*\VC\Tools\MSVC")
 )
 if not candidates:
+    # 用 vswhere 定位（兼容任意 VS 版本/镜像布局）
+    vswhere = r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+    if os.path.isfile(vswhere):
+        try:
+            inst = subprocess.run([vswhere, "-latest", "-products", "*",
+                                   "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+                                   "-property", "installationPath"],
+                                  capture_output=True, text=True).stdout.strip().splitlines()
+            for p in inst:
+                candidates += glob.glob(os.path.join(p.strip(), "VC", "Tools", "MSVC"))
+        except Exception:
+            pass
+if not candidates:
     sys.exit("未找到 MSVC，请安装 VS2022 Build Tools（C++ 工作负载）")
 root = sorted(candidates)[-1]          # 任一版本均可，取最后一个
 ver = os.listdir(root)[0]

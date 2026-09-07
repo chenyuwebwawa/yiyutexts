@@ -9,8 +9,11 @@ import AppKit
 let shared = IME()
 
 func tapCallback(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent,
-                 refcon: UnsafeMutableRawPointer?) -> CGEvent? {
-    shared.handleEvent(type: type, event: event)
+                 refcon: UnsafeMutableRawPointer?) -> Unmanaged<CGEvent>? {
+    if let result = shared.handleEvent(type: type, event: event) {
+        return Unmanaged.passUnretained(result)
+    }
+    return nil   // 返回 nil = 拦截该按键
 }
 
 final class IME: NSObject, NSApplicationDelegate {
@@ -50,7 +53,7 @@ final class IME: NSObject, NSApplicationDelegate {
         guard let s = try? String(contentsOfFile: path, encoding: .utf8) else { return }
         for line in s.components(separatedBy: "\n") {
             let p = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
-            if p.count >= 2 { dict[p[0]].append((p[1], p.count > 2 ? p[2] : "")) }
+            if p.count >= 2 { dict[p[0], default: []].append((p[1], p.count > 2 ? p[2] : "")) }
         }
     }
 
@@ -152,7 +155,7 @@ final class IME: NSObject, NSApplicationDelegate {
             return event
         }
         guard type == .keyDown, !committing, enabled else { return event }
-        let mods = event.flags.intersection(.deviceIndependentFlagsMask)
+        let mods = event.flags
         if mods.contains(.maskCommand) || mods.contains(.maskControl)
             || mods.contains(.maskAlternate) || mods.contains(.maskFunction) { return event }
         guard let chars = event.charactersIgnoringModifiers?.lowercased(),
