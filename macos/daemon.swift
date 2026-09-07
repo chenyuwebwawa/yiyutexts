@@ -17,6 +17,15 @@ func tapCallback(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent,
 }
 
 final class IME: NSObject, NSApplicationDelegate {
+    // ANSI 布局虚拟键码 → 字符
+    static let keyMap: [Int: String] = [
+        0: "a", 1: "s", 2: "d", 3: "f", 4: "h", 5: "g", 6: "z", 7: "x",
+        8: "c", 9: "v", 11: "b", 12: "q", 13: "w", 14: "e", 15: "r",
+        16: "y", 17: "t", 18: "1", 19: "2", 20: "3", 21: "4", 23: "5",
+        22: "6", 26: "7", 28: "8", 25: "9", 29: "0",
+        49: " ", 36: "\r", 51: "\u{7F}", 53: "\u{1B}", 43: "<", 47: ">",
+    ]
+
     var enabled = true
     var comp = ""
     var cands: [(word: String, comment: String)] = []
@@ -157,9 +166,10 @@ final class IME: NSObject, NSApplicationDelegate {
         guard type == .keyDown, !committing, enabled else { return event }
         let mods = event.flags
         if mods.contains(.maskCommand) || mods.contains(.maskControl)
-            || mods.contains(.maskAlternate) || mods.contains(.maskFunction) { return event }
-        guard let chars = event.charactersIgnoringModifiers?.lowercased(),
-              chars.count == 1 else { return event }
+            || mods.contains(.maskAlternate) || mods.contains(.maskShift) { return event }
+        // CGEvent 无字符接口：用虚拟键码映射（ANSI 布局）
+        let code = Int(event.getIntegerValueField(.keyboardEventKeycode))
+        guard let chars = IME.keyMap[code] else { return event }
 
         let isLetter = chars >= "a" && chars <= "z"
         let hasComp = !comp.isEmpty
