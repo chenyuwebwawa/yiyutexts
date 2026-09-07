@@ -163,7 +163,8 @@ static void QueryCandidates() {
     if (g_st.cands.size() > 80) break;
   }
   auto score = [](const Entry& e) {
-    return (long long)FreqOf(e.comment) * 10000000LL + (e.exact ? 50000000LL : 0) + e.freq;
+    long long user = (long long)min(FreqOf(e.comment), 20) * 50000LL;   // 有界加权：渐进提升
+    return user + (e.exact ? 50000000LL : 0) + e.freq;   // 整音节匹配 > 语料词频 > 用户加权
   };   // 用户习惯 > 整音节匹配 > 语料词频
   std::stable_sort(g_st.cands.begin(), g_st.cands.end(),
                    [&](const Entry& a, const Entry& b) { return score(a) > score(b); });
@@ -227,16 +228,18 @@ static void ApplyLang(int idx) {
 static LRESULT CALLBACK SettingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
   if (m == WM_CREATE) {
     CreateWindowExW(0, L"STATIC", nullptr, WS_CHILD | WS_VISIBLE,
-                    14, 12, 330, 22, h, (HMENU)1, g_hInst, nullptr);
+                    14, 12, 480, 22, h, (HMENU)1, g_hInst, nullptr);
     g_hList = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", nullptr,
                     WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY | LBS_HASSTRINGS,
-                    14, 40, 330, 300, h, (HMENU)2, g_hInst, nullptr);
+                    14, 40, 480, 300, h, (HMENU)2, g_hInst, nullptr);
     CreateWindowExW(0, L"BUTTON", L"应用", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
                     14, 352, 100, 32, h, (HMENU)3, g_hInst, nullptr);
     CreateWindowExW(0, L"BUTTON", L"刷新", WS_CHILD | WS_VISIBLE,
                     126, 352, 100, 32, h, (HMENU)4, g_hInst, nullptr);
+    CreateWindowExW(0, L"BUTTON", L"清除学习数据", WS_CHILD | WS_VISIBLE,
+                    244, 352, 130, 32, h, (HMENU)6, g_hInst, nullptr);
     CreateWindowExW(0, L"BUTTON", L"关闭", WS_CHILD | WS_VISIBLE,
-                    244, 352, 100, 32, h, (HMENU)5, g_hInst, nullptr);
+                    386, 352, 100, 32, h, (HMENU)5, g_hInst, nullptr);
     EnumChildWindows(h, [](HWND c, LPARAM font) -> BOOL {
       SendMessageW(c, WM_SETFONT, (WPARAM)font, TRUE); return TRUE;
     }, (LPARAM)g_hFont);
@@ -261,6 +264,12 @@ static LRESULT CALLBACK SettingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         SendMessageW(g_hList, LB_INSERTSTRING, i, (LPARAM)t.c_str());
       }
       SendMessageW(g_hList, LB_SETCURSEL, sel, 0);
+      return 0;
+    }
+    if (id == 6 && code == BN_CLICKED) {
+      g_freq.clear(); g_bigram.clear(); g_last.clear();
+      g_userDirty = true; SaveUser();
+      MessageBoxW(h, L"学习数据已清除（词频与联想记忆归零）。", L"译语输入法", MB_OK | MB_ICONINFORMATION);
       return 0;
     }
     if (id == 4 && code == BN_CLICKED) {
@@ -289,7 +298,7 @@ static void OpenSettings() {
   g_hSettings = CreateWindowExW(0, L"YuyinSettings",
       (std::wstring(L"译语输入法 — 目标语言（已内置 ") + std::to_wstring(g_packList.size()) + L" 个语言包）").c_str(),
       WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-      CW_USEDEFAULT, CW_USEDEFAULT, 372, 440, nullptr, nullptr, g_hInst, nullptr);
+      CW_USEDEFAULT, CW_USEDEFAULT, 520, 440, nullptr, nullptr, g_hInst, nullptr);
   g_hCur = GetDlgItem(g_hSettings, 1);
   SendMessageW(g_hCur, WM_SETTEXT, 0, (LPARAM)((std::wstring(L"当前语言：") + g_currentLang + L"　词汇包目录：packs\\").c_str()));
   for (auto& pk : g_packList) {
@@ -412,7 +421,7 @@ static void CommitForeign(int idx) {
   std::wstring hans = g_st.cands[idx].comment;
   Reset();
   if (!hans.empty()) Learn(hans);
-  SendText(word);
+  SendText(word.empty() ? hans : word);   // 无外语词条时退化为上屏中文
 }
 
 static void CommitRaw() {
@@ -457,7 +466,8 @@ static LRESULT CALLBACK CandProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     for (int i = 0; i < 8 && start + i < (int)g_st.cands.size(); i++) {
       Entry& e = g_st.cands[start + i];
       wchar_t line[512];
-      swprintf(line, 512, L"%d  %s   %s", i + 1, e.comment.c_str(), e.word.c_str());
+      if (e.word.empty()) swprintf(line, 512, L"%d  %s", i + 1, e.comment.c_str());
+      else swprintf(line, 512, L"%d  %s   %s", i + 1, e.comment.c_str(), e.word.c_str());
       if (i == g_st.active) {
         RECT hl = { 4, y - 3, rc.right - 4, y + 22 };
         HBRUSH hb = CreateSolidBrush(acc); FillRect(dc, &hl, hb); DeleteObject(hb);

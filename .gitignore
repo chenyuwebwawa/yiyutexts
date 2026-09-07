@@ -5,3 +5,4 @@ __pycache__/
 dn_check.txt
 tools/makensis.7z
 .cred
+live*.png
