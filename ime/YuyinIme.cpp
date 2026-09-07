@@ -24,15 +24,16 @@ static NOTIFYICONDATAW g_nid;
 static UINT WMAPP_TRAY;
 
 static bool g_enabled = true;
-static bool g_armed = false;   // 外语组字模式（按 ` 进入，Esc/上屏完退出）；未激活时完全透传
 static std::wstring g_toast;   // 开关提示（闪现）
 
 static void LayoutCand();   // forward
 static void Reset();
 static void ShowToast(const wchar_t* text);
 
-struct Entry { std::wstring word, comment; };
+struct Entry { std::wstring word, comment; };          // word=外语  comment=中文
 static std::unordered_map<std::wstring, std::vector<Entry>> g_dict;
+static std::unordered_map<std::wstring, std::wstring> g_hansWord;   // 中文 → 首选外语
+static std::vector<std::wstring> g_keys;                            // 排序键表（二分前缀查询）
 static std::wstring g_currentLang = L"英语";
 
 // 语言包设置页
@@ -114,6 +115,7 @@ static int FreqOf(const std::wstring& w) {
 static void LoadDict() {
   std::wstring dir = ExeDir();
   g_dict.clear();
+  g_hansWord.clear();
   std::ifstream f(dir + L"\\dict.tsv");
   if (!f) return;
   std::string line;
@@ -125,32 +127,45 @@ static void LoadDict() {
     if (!std::getline(ss, key, '\t')) continue;
     if (!std::getline(ss, word, '\t')) continue;
     std::getline(ss, comment, '\t');
-    g_dict[Utf8ToWide(key)].push_back({ Utf8ToWide(word), Utf8ToWide(comment) });
+    Entry e = { Utf8ToWide(word), Utf8ToWide(comment) };
+    g_dict[Utf8ToWide(key)].push_back(e);
+    if (!e.comment.empty() && !g_hansWord.count(e.comment)) g_hansWord[e.comment] = e.word;
   }
+  // 排序键表：前缀查询用二分查找（双数组 Trie 的工程等价物），毫秒级→微秒级
+  g_keys.clear();
+  for (auto& kv : g_dict) g_keys.push_back(kv.first);
+  std::sort(g_keys.begin(), g_keys.end());
 }
 
 static void QueryCandidates() {
   g_st.cands.clear();
   if (g_st.comp.empty()) { g_st.pageCount = 1; g_st.page = 0; return; }
+  std::vector<Entry> raw;
   auto it = g_dict.find(g_st.comp);
-  if (it != g_dict.end()) g_st.cands = it->second;
-  for (auto& kv : g_dict) {
-    if (kv.first.size() > g_st.comp.size() &&
-        kv.first.compare(0, g_st.comp.size(), g_st.comp) == 0) {
-      for (auto& e : kv.second) g_st.cands.push_back(e);
-      if (g_st.cands.size() > 80) break;
-    }
+  if (it != g_dict.end()) raw = it->second;
+  // 排序键表二分：只遍历命中前缀的键段（不再全表扫描）
+  auto lo = std::lower_bound(g_keys.begin(), g_keys.end(), g_st.comp);
+  for (auto kit = lo; kit != g_keys.end(); ++kit) {
+    if (kit->rfind(g_st.comp, 0) != 0) break;
+    for (auto& e : g_dict[*kit]) raw.push_back(e);
+    if (raw.size() > 240) break;
   }
-  // 词频动态调整：用户高频上屏的词排前面（稳定排序保持词典原顺序为次序）
+  // 按中文词去重（同一中文取首个外语释义），用户高频词置顶
+  std::unordered_map<std::wstring, bool> seen;
+  for (auto& e : raw) {
+    if (e.comment.empty() || seen.count(e.comment)) continue;
+    seen[e.comment] = true;
+    g_st.cands.push_back(e);
+    if (g_st.cands.size() > 80) break;
+  }
   std::stable_sort(g_st.cands.begin(), g_st.cands.end(),
-                   [](const Entry& a, const Entry& b) { return FreqOf(a.word) > FreqOf(b.word); });
-  if (g_st.cands.size() > 80) g_st.cands.resize(80);
+                   [](const Entry& a, const Entry& b) { return FreqOf(a.comment) > FreqOf(b.comment); });
   g_st.pageCount = (int)((g_st.cands.size() + 7) / 8);
   if (g_st.pageCount < 1) g_st.pageCount = 1;
   if (g_st.page >= g_st.pageCount) g_st.page = g_st.pageCount - 1;
 }
 
-// 上屏后：按二元共现给出下一个词的联想候选
+// 上屏后：按二元共现给出下一个中文词的联想候选
 static void SetupAssoc() {
   g_st.assoc = true;
   g_st.cands.clear();
@@ -158,7 +173,10 @@ static void SetupAssoc() {
   if (it != g_bigram.end()) {
     std::vector<std::pair<std::wstring, int>> v = it->second;
     std::sort(v.begin(), v.end(), [](auto& a, auto& b) { return a.second > b.second; });
-    for (auto& pr : v) g_st.cands.push_back({ pr.first, L"联想" });
+    for (auto& pr : v) {
+      std::wstring word = g_hansWord.count(pr.first) ? g_hansWord[pr.first] : pr.first;
+      g_st.cands.push_back({ word, pr.first });
+    }
   }
   g_st.page = 0; g_st.active = 0;
   g_st.pageCount = (int)((g_st.cands.size() + 7) / 8);
@@ -314,7 +332,7 @@ static void LayoutCand() {
     InvalidateRect(g_hCand, nullptr, TRUE);
     return;
   }
-  if (!g_armed && g_st.comp.empty()) { ShowWindow(g_hCand, SW_HIDE); return; }
+  if (g_st.comp.empty()) { ShowWindow(g_hCand, SW_HIDE); return; }
   int rows = (int)g_st.cands.size() - g_st.page * 8;
   if (rows > 8) rows = 8;
   if (rows < 0) rows = 0;
@@ -347,32 +365,47 @@ static void SendText(const std::wstring& w) {
 static void Reset() {
   g_st.comp.clear(); g_st.cands.clear();
   g_st.page = 0; g_st.active = 0; g_st.assoc = false;
-  g_armed = false;
   g_anchorSet = false;
   if (g_toast.empty()) ShowWindow(g_hCand, SW_HIDE);
 }
 
-// 上屏一个词：更新词频/二元学习 → 弹出下一词联想
-static void Pick(int idx) {
-  if (idx < 0 || idx >= (int)g_st.cands.size()) return;
-  std::wstring word = g_st.cands[idx].word;
-  g_st.comp.clear(); g_st.cands.clear();
-  g_st.page = 0; g_st.active = 0;
-  g_freq[word]++;
-  if (!g_last.empty() && g_last != word) {
+// 学习记录：词频 + 二元共现（键为中文词）
+static void Learn(const std::wstring& hans) {
+  g_freq[hans]++;
+  if (!g_last.empty() && g_last != hans) {
     auto& v = g_bigram[g_last];
     bool found = false;
-    for (auto& pr : v) if (pr.first == word) { pr.second++; found = true; break; }
-    if (!found) v.push_back({ word, 1 });
+    for (auto& pr : v) if (pr.first == hans) { pr.second++; found = true; break; }
+    if (!found) v.push_back({ hans, 1 });
     if (v.size() > 30) {
       std::sort(v.begin(), v.end(), [](auto& a, auto& b) { return a.second > b.second; });
       v.resize(30);
     }
   }
-  g_last = word;
+  g_last = hans;
   g_userDirty = true;   // 钩子线程内不做文件 IO（会被 Windows 判超时移除钩子），由定时器落盘
+}
+
+// 上屏中文（空格/回车，像正常输入法）
+static void CommitHan(int idx) {
+  if (idx < 0 || idx >= (int)g_st.cands.size()) return;
+  std::wstring hans = g_st.cands[idx].comment;
+  Reset();
+  if (!hans.empty()) {
+    Learn(hans);
+    SendText(hans);
+    SetupAssoc();   // 联想下一个词
+  }
+}
+
+// 上屏外语词（数字键 1-8，学习动作）
+static void CommitForeign(int idx) {
+  if (idx < 0 || idx >= (int)g_st.cands.size()) return;
+  std::wstring word = g_st.cands[idx].word;
+  std::wstring hans = g_st.cands[idx].comment;
+  Reset();
+  if (!hans.empty()) Learn(hans);
   SendText(word);
-  SetupAssoc();   // 联想下一个词
 }
 
 static void CommitRaw() {
@@ -428,7 +461,7 @@ static LRESULT CALLBACK CandProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
     SelectObject(dc, g_hFontSmall); SetTextColor(dc, mut);
     wchar_t foot[64];
-    swprintf(foot, 64, L"%d / %d   < > 翻页", g_st.page + 1, g_st.pageCount);
+    swprintf(foot, 64, L"%d / %d   空格上中文 · 数字上外语", g_st.page + 1, g_st.pageCount);
     TextOutW(dc, 8, rc.bottom - 18, foot, (int)wcslen(foot));
     EndPaint(h, &ps);
     return 0;
@@ -462,7 +495,7 @@ static LRESULT CALLBACK CandProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         wcscpy(g_nid.szTip, g_enabled ? L"译语输入法 - 打字中 (Ctrl+Space 暂停)"
                                       : L"译语输入法 - 已暂停 (Ctrl+Space 开启)");
         Shell_NotifyIconW(NIM_MODIFY, &g_nid);
-        ShowToast(g_enabled ? L"译语输入法 已开启 — 直接打拼音" : L"译语输入法 已暂停 — 键盘恢复原样");
+        ShowToast(g_enabled ? L"译语输入法 已开启 — 打拼音，空格上中文" : L"译语输入法 已暂停 — 键盘恢复原样");
       }
       if (cmd == 2) { SaveUser(); PostQuitMessage(0); }
     }
@@ -472,6 +505,8 @@ static LRESULT CALLBACK CandProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 }
 
 // ---------------- 按键处理 ----------------
+// 这是一个真正的中文输入法：打拼音出中文候选，空格/回车上屏中文；
+// 每条候选右侧附带外语释义，按数字键上屏外语词（学习动作）。
 static bool HandleKey(DWORD vk, bool* eaten) {
   *eaten = false;
   if (!g_enabled) return false;
@@ -479,12 +514,8 @@ static bool HandleKey(DWORD vk, bool* eaten) {
   if (vk == VK_CONTROL || vk == VK_MENU || vk == VK_SHIFT) return false;
 
   bool isLetter = (vk >= 'A' && vk <= 'Z');
-  bool hasComp = !g_st.comp.empty();
-  bool assoc = g_st.assoc && !hasComp && !g_st.cands.empty();
 
-  // 未按 ` 进入外语模式时：一个键都不拦，中文输入法完全正常
-  if (!g_armed) return false;
-
+  // 字母：随时开始/延续组字
   if (isLetter) {
     g_st.assoc = false;
     if (g_st.comp.size() < 24) g_st.comp += (wchar_t)tolower(vk);
@@ -492,71 +523,70 @@ static bool HandleKey(DWORD vk, bool* eaten) {
     *eaten = true; return true;
   }
 
-  if (assoc) {
-    // 联想候选的选择（数字/空格/回车/翻页），Esc 退出联想
-    switch (vk) {
-    case VK_ESCAPE:
-      Reset();   // Esc 退出外语模式，回到正常打字
+  // ---- 组字中 ----
+  if (!g_st.comp.empty()) {
+    if (vk == VK_ESCAPE) { Reset(); *eaten = true; return true; }
+    if (vk == VK_BACK) {                       // 退格删字母；删空后窗口隐藏，退格交还系统
+      g_st.comp.pop_back();
+      QueryCandidates(); LayoutCand();
       *eaten = true; return true;
-    case VK_SPACE: case VK_RETURN:
-      Pick(g_st.page * 8 + g_st.active); *eaten = true; return true;
-    case VK_UP: case VK_DOWN: {
+    }
+    if (vk == VK_SPACE || vk == VK_RETURN) {   // 空格/回车：上屏中文（正常输入法行为）
+      if (!g_st.cands.empty()) CommitHan(g_st.page * 8 + g_st.active);
+      else CommitRaw();
+      *eaten = true; return true;
+    }
+    if (vk >= '1' && vk <= '8') {              // 数字：上屏外语词（学习动作）
+      int idx = g_st.page * 8 + (vk - '1');
+      if (idx < (int)g_st.cands.size()) CommitForeign(idx);
+      else CommitRaw();
+      *eaten = true; return true;
+    }
+    if (vk == VK_UP || vk == VK_DOWN) {
+      if (g_st.cands.empty()) return false;    // 无候选时不吃方向键
       if (vk == VK_DOWN) { g_st.active++; if (g_st.active > 7) { g_st.page = (g_st.page + 1) % g_st.pageCount; g_st.active = 0; } }
       else { g_st.active--; if (g_st.active < 0) { g_st.page = (g_st.page - 1 + g_st.pageCount) % g_st.pageCount; g_st.active = 7; } }
+      int pageLen = (int)g_st.cands.size() - g_st.page * 8; if (pageLen > 8) pageLen = 8;
+      if (g_st.active >= pageLen) g_st.active = pageLen - 1;
       LayoutCand(); *eaten = true; return true;
     }
-    case 0xBC: case 0xBE: {
+    if (vk == 0xBC || vk == 0xBE) {   // < > 翻页
       int dir = (vk == 0xBC) ? -1 : 1;
       g_st.page = (g_st.page + dir + g_st.pageCount) % g_st.pageCount;
       g_st.active = 0; LayoutCand(); *eaten = true; return true;
     }
-    default:
-      if (vk >= '1' && vk <= '8') {
-        int idx = g_st.page * 8 + (vk - '1');
-        if (idx < (int)g_st.cands.size()) Pick(idx);
-        *eaten = true; return true;
-      }
-      // 其他键：退出联想回到"输入拼音"提示（仍在外语模式），原键透传
-      g_st.assoc = false; g_st.cands.clear();
-      LayoutCand();
-      return false;
-    }
+    // 其他键（标点等）：拼音原样上屏后透传
+    CommitRaw();
+    return false;
   }
 
-  // ---- 组字模式 ----
-  if (vk == VK_ESCAPE) { Reset(); *eaten = true; return true; }
-  if (vk == VK_BACK) {
-    if (!g_st.comp.empty()) g_st.comp.pop_back();
-    QueryCandidates(); LayoutCand();
-    *eaten = true; return true;
+  // ---- 空闲：仅当联想面板显示时提供选择，其余键全部透传 ----
+  if (g_st.assoc && !g_st.cands.empty()) {
+    if (vk >= '1' && vk <= '8') {
+      int idx = g_st.page * 8 + (vk - '1');
+      if (idx < (int)g_st.cands.size()) CommitForeign(idx);   // 联想中外语也上外语
+      else { g_st.assoc = false; g_st.cands.clear(); ShowWindow(g_hCand, SW_HIDE); }
+      *eaten = true; return true;
+    }
+    if (vk == VK_SPACE || vk == VK_RETURN) { CommitHan(g_st.page * 8 + g_st.active); *eaten = true; return true; }
+    if (vk == VK_ESCAPE) { Reset(); *eaten = true; return true; }
+    if (vk == VK_UP || vk == VK_DOWN) {
+      if (vk == VK_DOWN) { g_st.active++; if (g_st.active > 7) { g_st.page = (g_st.page + 1) % g_st.pageCount; g_st.active = 0; } }
+      else { g_st.active--; if (g_st.active < 0) { g_st.page = (g_st.page - 1 + g_st.pageCount) % g_st.pageCount; g_st.active = 7; } }
+      LayoutCand(); *eaten = true; return true;
+    }
+    if (vk == 0xBC || vk == 0xBE) {
+      int dir = (vk == 0xBC) ? -1 : 1;
+      g_st.page = (g_st.page + dir + g_st.pageCount) % g_st.pageCount;
+      g_st.active = 0; LayoutCand(); *eaten = true; return true;
+    }
+    // 其他键：清联想，原键透传（保证中文打字、删除等一切正常）
+    g_st.assoc = false; g_st.cands.clear();
+    ShowWindow(g_hCand, SW_HIDE);
+    return false;
   }
-  if (vk == VK_SPACE || vk == VK_RETURN) {
-    if (!g_st.cands.empty()) Pick(g_st.page * 8 + g_st.active);
-    else CommitRaw();
-    *eaten = true; return true;
-  }
-  if (vk == VK_UP || vk == VK_DOWN) {
-    if (g_st.cands.empty()) return false;   // 无候选时不吃方向键，光标移动照常
-    if (vk == VK_DOWN) { g_st.active++; if (g_st.active > 7) { g_st.page = (g_st.page + 1) % g_st.pageCount; g_st.active = 0; } }
-    else { g_st.active--; if (g_st.active < 0) { g_st.page = (g_st.page - 1 + g_st.pageCount) % g_st.pageCount; g_st.active = 7; } }
-    int pageLen = (int)g_st.cands.size() - g_st.page * 8; if (pageLen > 8) pageLen = 8;
-    if (g_st.active >= pageLen) g_st.active = pageLen - 1;
-    LayoutCand(); *eaten = true; return true;
-  }
-  if (vk == 0xBC || vk == 0xBE) {   // < >
-    int dir = (vk == 0xBC) ? -1 : 1;
-    g_st.page = (g_st.page + dir + g_st.pageCount) % g_st.pageCount;
-    g_st.active = 0; LayoutCand(); *eaten = true; return true;
-  }
-  if (vk >= '1' && vk <= '8') {
-    int idx = g_st.page * 8 + (vk - '1');
-    if (idx < (int)g_st.cands.size()) Pick(idx);
-    else CommitRaw();
-    *eaten = true; return true;
-  }
-  // 其他键（标点等）：拼音原样上屏后透传
-  CommitRaw();
-  return false;
+
+  return false;   // 完全空闲：键盘 100% 透传
 }
 
 static LRESULT CALLBACK HookProc(int code, WPARAM w, LPARAM l) {
@@ -570,28 +600,21 @@ static LRESULT CALLBACK HookProc(int code, WPARAM w, LPARAM l) {
       wcscpy(g_nid.szTip, g_enabled ? L"译语输入法 - 打字中 (Ctrl+Space 暂停)"
                                     : L"译语输入法 - 已暂停 (Ctrl+Space 开启)");
       Shell_NotifyIconW(NIM_MODIFY, &g_nid);
-      ShowToast(g_enabled ? L"译语输入法 已开启 — 直接打拼音" : L"译语输入法 已暂停 — 键盘恢复原样");
+      ShowToast(g_enabled ? L"译语输入法 已开启 — 打拼音，空格上中文" : L"译语输入法 已暂停 — 键盘恢复原样");
       return 1;
     }
     if (k->vkCode == 'Q' && ctrl && alt) { PostQuitMessage(0); return 1; }
-    // ` (反引号，Tab 上方)：进入/退出外语组字；平时键盘 100% 透传
-    if (k->vkCode == VK_OEM_3 && !ctrl && !alt && g_enabled) {
-      g_armed = !g_armed;
-      if (g_armed) {
-        g_st.comp.clear(); g_st.cands.clear();
-        g_st.page = 0; g_st.active = 0;
-        g_anchorSet = false;   // 重新锚定到当前位置
-        if (!g_last.empty() && g_bigram.count(g_last)) SetupAssoc();
-        else { g_st.assoc = false; LayoutCand(); }   // 显示"输入拼音"提示
-      } else {
-        g_st.comp.clear(); g_st.cands.clear(); g_st.assoc = false;
-        ShowWindow(g_hCand, SW_HIDE);
+    bool eaten = false;
+    HandleKey((DWORD)k->vkCode, &eaten);
+    if (eaten) {
+      static bool logged = false;
+      if (!logged) {
+        std::ofstream lg((ExeDir() + L"\\hook.log").c_str(), std::ios::app);
+        lg << "first eaten vk=" << (int)k->vkCode << std::endl;
+        logged = true;
       }
       return 1;
     }
-    bool eaten = false;
-    HandleKey((DWORD)k->vkCode, &eaten);
-    if (eaten) return 1;
   }
   return CallNextHookEx(g_hHook, code, w, l);
 }
@@ -630,8 +653,12 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
   Shell_NotifyIconW(NIM_ADD, &g_nid);
 
   g_hHook = SetWindowsHookExW(WH_KEYBOARD_LL, HookProc, hInst, 0);
+  {   // 诊断日志（定位钩子问题用）
+    std::ofstream lg(ExeDir() + L"\\hook.log", std::ios::app);
+    lg << "install ok=" << (g_hHook ? 1 : 0) << " gle=" << GetLastError() << "\n";
+  }
   SetTimer(g_hCand, 2, 3000, nullptr);   // 学习数据定时落盘
-  ShowToast(L"译语输入法 已开启 — 直接打拼音试试 nihao");
+  ShowToast(L"译语输入法 已开启 — 打 nihao，空格上中文，数字上外语");
 
   MSG msg;
   while (GetMessageW(&msg, nullptr, 0, 0)) { TranslateMessage(&msg); DispatchMessageW(&msg); }

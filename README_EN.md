@@ -4,7 +4,7 @@
 
 [中文](README.md) | **English**
 
-A lightweight system-level IME: in **any app**, press `` ` `` to start composing pinyin, get foreign equivalents in the candidate window, and the foreign word is committed on selection. When not triggered, not a single key is intercepted — your Chinese IME keeps working normally.
+A lightweight system-level IME that **actually types Chinese**: type pinyin, get Chinese candidates with foreign glosses side by side. Space commits the Chinese word (like any IME); number keys commit the foreign word — that's the learning moment.
 
 The Windows core is a **single 260KB executable** — no registration, no admin rights, no dependencies. Launch and type.
 
@@ -23,16 +23,16 @@ The Windows core is a **single 260KB executable** — no registration, no admin 
 
 | Key | Action |
 | --- | --- |
-| `` ` `` (backquote, above Tab) | enter / exit foreign composition; 100% pass-through otherwise |
-| letters | inside foreign mode: compose pinyin, window follows the text caret |
-| `1`–`8` | select (commits the foreign word), then next-word prediction appears |
-| `Space` / `Enter` | commit first choice; unmatched input passes as-is and exits |
+| letters | compose pinyin; Chinese candidates with foreign glosses appear |
+| `Space` / `Enter` | **commit the Chinese** word (normal IME behavior), then next-word prediction |
+| `1`–`8` | **commit the foreign word** (the learning action) |
 | `<` `>` / `↑` `↓` | page / move highlight |
-| `Esc` / `Backspace` | exit foreign mode / delete letter |
+| `Esc` | cancel composition |
+| `Backspace` | delete letter (falls through to the system when empty) |
 | `Ctrl+Space` | master toggle (pause / resume the whole IME) |
 | `Ctrl+Alt+Q` | quit |
 
-Typical flow: type Chinese as usual → want a foreign word? press `` ` `` → type `nihao` → Space commits `hello` → the panel switches to prediction, keep selecting to build a phrase → `Esc` back to Chinese.
+Typical flow: type `nihao` → candidates show 你好 hello → Space commits 你好 for real typing → press `1` whenever you want the foreign word `hello`. The prediction panel keeps the sentence flowing.
 
 ## 📦 Install
 
@@ -40,7 +40,7 @@ Typical flow: type Chinese as usual → want a foreign word? press `` ` `` → t
 
 1. Download `YuyinIme-Setup.exe` from [Releases](../../releases)
 2. Double-click → Next → Done (auto-starts, registers autostart, desktop shortcut)
-3. Any input field: press `` ` `` → type `nihao` → Space commits `hello` → `Esc` back to Chinese
+3. Any input field: type `nihao` → Space commits 你好, press `1` to commit `hello` — Chinese and foreign both in your control
 
 **Upgrade**: just run the new `YuyinIme-Setup.exe` — the installer stops the old process, replaces files, **keeps your learning data** (frequency and association memory carry over), and restarts the IME. No uninstall needed.
 
