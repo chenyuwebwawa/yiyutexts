@@ -27,11 +27,13 @@ jobs:
           python -c "import gzip; open('data/raw/cedict.txt','wb').write(gzip.open('data/raw/cedict.txt.gz').read())"
           python tools/build_dict.py en
 
-      - name: Build installer (NSIS preinstalled on runner)
+      - name: Build installer (portable NSIS)
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          & "C:\Program Files (x86)\NSIS\makensis.exe" installer\setup.nsi
+          Invoke-WebRequest -Uri 'https://npmmirror.com/mirrors/electron-builder-binaries/nsis-3.0.4.1/nsis-3.0.4.1.7z' -OutFile nsis.7z
+          & "C:\Program Files\7-Zip\7z.exe" x nsis.7z -onsis | Out-Null
+          & ".\nsis\Bin\makensis.exe" installer\setup.nsi
 
       - uses: actions/upload-artifact@v4
         with:
